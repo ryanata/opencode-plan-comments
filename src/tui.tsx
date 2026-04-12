@@ -12,50 +12,56 @@ function truncate(str: string, max: number) {
   return str.slice(0, max - 1) + "…";
 }
 
-function session(api: TuiPluginApi): string | undefined {
-  const route = api.route.current;
-  if (route.name === "session") return route.params.sessionID;
-  return undefined;
+function output(api: TuiPluginApi, sid: string): string {
+  const msgs = api.state.session.messages(sid);
+  const last = [...msgs].reverse().find((m) => m.role === "assistant");
+  if (!last) return "";
+  const parts = api.state.part(last.id);
+  return parts
+    .filter(
+      (p) => p.type === "text" && !(p as any).synthetic && !(p as any).ignored,
+    )
+    .map((p) => (p as any).text as string)
+    .join("\n")
+    .trim();
 }
 
-function Listener(props: {
+function CommentView(props: {
   api: TuiPluginApi;
-  keys: ReturnType<TuiPluginApi["keybind"]["create"]>;
+  params?: Record<string, unknown>;
 }) {
-  useKeyboard((evt) => {
-    if (!props.keys.match("comment", evt)) return;
-    evt.preventDefault();
-    evt.stopPropagation();
+  const sid = () => (props.params?.sessionID as string) ?? "";
+  const theme = () => props.api.theme.current;
+  const text = createMemo(() => output(props.api, sid()));
+  const [tick, setTick] = createSignal(0);
 
+  const list = createMemo(() => {
+    tick();
+    return store.all(sid());
+  });
+
+  const pending = createMemo(() => list().filter((c) => !c.resolved).length);
+
+  const timer = setInterval(() => setTick((n) => n + 1), 500);
+  props.api.lifecycle.onDispose(() => clearInterval(timer));
+
+  function back() {
+    props.api.route.navigate("session", { sessionID: sid() });
+  }
+
+  function capture() {
     const sel = (props.api.renderer as any).getSelection?.();
-    const text = sel?.getSelectedText?.();
-    if (!text || !text.trim()) {
-      props.api.ui.toast({
-        variant: "warning",
-        message: "Select text in the plan output first",
-      });
-      return;
-    }
+    const selected = sel?.getSelectedText?.();
+    if (!selected?.trim()) return;
 
-    const sid = session(props.api);
-    if (!sid) {
-      props.api.ui.toast({
-        variant: "warning",
-        message: "Open a session first",
-      });
-      return;
-    }
-
-    const excerpt = text;
-    (props.api.renderer as any).clearSelection?.();
-
+    const excerpt = selected;
     props.api.ui.dialog.replace(() => (
       <props.api.ui.DialogPrompt
-        title="Comment on plan"
+        title="Comment on selection"
         placeholder="Your feedback..."
         description={() => (
           <box>
-            <text fg={props.api.theme.current.textMuted} wrapMode="char">
+            <text fg={theme().textMuted} wrapMode="char">
               {truncate(excerpt.trim(), 120)}
             </text>
           </box>
@@ -68,96 +74,174 @@ function Listener(props: {
             });
             return;
           }
-          store.add(sid, excerpt, value.trim());
+          store.add(sid(), excerpt, value.trim());
           props.api.ui.dialog.clear();
           props.api.ui.toast({ variant: "success", message: "Comment added" });
+          setTick((n) => n + 1);
         }}
         onCancel={() => {
           props.api.ui.dialog.clear();
         }}
       />
     ));
+  }
+
+  useKeyboard((evt) => {
+    if (evt.name === "escape") {
+      if (props.api.ui.dialog.open) return;
+      evt.preventDefault();
+      evt.stopPropagation();
+      back();
+    }
   });
-
-  return null;
-}
-
-function Sidebar(props: { api: TuiPluginApi; session_id: string }) {
-  const theme = () => props.api.theme.current;
-  const [tick, setTick] = createSignal(0);
-
-  const list = createMemo(() => {
-    tick();
-    return store.all(props.session_id);
-  });
-
-  const timer = setInterval(() => setTick((n) => n + 1), 500);
-  props.api.lifecycle.onDispose(() => clearInterval(timer));
 
   return (
-    <Show when={list().length > 0}>
-      <box>
+    <box
+      flexDirection="column"
+      flexGrow={1}
+      onMouseUp={(evt: any) => {
+        evt.stopPropagation();
+        // Small delay so the selection is finalized before we read it
+        setTimeout(capture, 10);
+      }}
+    >
+      {/* Header */}
+      <box paddingLeft={2} paddingRight={2} paddingTop={1}>
         <text fg={theme().text}>
-          <b>Plan Comments</b>
+          <b>Comment on output</b>
         </text>
-        <For each={list()}>
-          {(item) => (
+      </box>
+
+      {/* Main content */}
+      <box
+        flexDirection="row"
+        flexGrow={1}
+        paddingLeft={2}
+        paddingRight={1}
+        paddingTop={1}
+      >
+        {/* Left: plan text */}
+        <box flexGrow={1} paddingRight={2}>
+          <Show
+            when={text()}
+            fallback={
+              <box flexGrow={1} justifyContent="center" alignItems="center">
+                <text fg={theme().textMuted}>
+                  No assistant output in this session
+                </text>
+              </box>
+            }
+          >
+            <scrollbox flexGrow={1} stickyScroll={false}>
+              <code
+                filetype="markdown"
+                content={text()}
+                selectable={true}
+                fg={theme().text}
+              />
+            </scrollbox>
+          </Show>
+        </box>
+
+        {/* Right: comments panel */}
+        <box
+          width={36}
+          border={["left"]}
+          borderColor={theme().border}
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text fg={theme().text}>
+            <b>Comments</b>
+          </text>
+          <Show when={list().length === 0}>
             <box marginTop={1}>
               <text fg={theme().textMuted} wrapMode="char">
-                {"> " + truncate(item.excerpt.trim(), 60)}
-              </text>
-              <text
-                fg={item.resolved ? theme().textMuted : theme().text}
-                wrapMode="char"
-              >
-                {"  " + item.text}
-              </text>
-              <text fg={item.resolved ? theme().success : theme().warning}>
-                {item.resolved ? "  [resolved]" : "  [pending]"}
+                Select text on the left to leave a comment
               </text>
             </box>
-          )}
-        </For>
+          </Show>
+          <scrollbox flexGrow={1} marginTop={1}>
+            <For each={list()}>
+              {(item) => (
+                <box marginBottom={1}>
+                  <text fg={theme().textMuted} wrapMode="char">
+                    {">" + truncate(item.excerpt.trim(), 50)}
+                  </text>
+                  <text
+                    fg={item.resolved ? theme().textMuted : theme().text}
+                    wrapMode="char"
+                  >
+                    {item.text}
+                  </text>
+                  <text fg={item.resolved ? theme().success : theme().warning}>
+                    {item.resolved ? "[resolved]" : "[pending]"}
+                  </text>
+                </box>
+              )}
+            </For>
+          </scrollbox>
+        </box>
       </box>
-    </Show>
+
+      {/* Footer */}
+      <box
+        flexDirection="row"
+        justifyContent="space-between"
+        paddingLeft={2}
+        paddingRight={2}
+        paddingBottom={1}
+        border={["top"]}
+        borderColor={theme().border}
+      >
+        <text fg={theme().textMuted}>esc back to session</text>
+        <text fg={pending() > 0 ? theme().warning : theme().textMuted}>
+          {pending() > 0 ? `${pending()} pending` : "no comments"}
+        </text>
+      </box>
+    </box>
   );
 }
 
 const tui: TuiPlugin = async (api) => {
-  const keys = api.keybind.create({ comment: "ctrl+m" });
-
-  api.slots.register({
-    order: 900,
-    slots: {
-      app() {
-        return <Listener api={api} keys={keys} />;
-      },
+  api.route.register([
+    {
+      name: "plan-comments",
+      render: (input) => <CommentView api={api} params={input.params} />,
     },
-  });
-
-  api.slots.register({
-    order: 350,
-    slots: {
-      sidebar_content(_ctx, props) {
-        return <Sidebar api={api} session_id={props.session_id} />;
-      },
-    },
-  });
+  ]);
 
   api.command.register(() => [
+    {
+      title: "Comment on output",
+      value: "plan-comments.open",
+      slash: { name: "comment" },
+      category: "Plan",
+      description: "Open comment view for the latest assistant output",
+      onSelect() {
+        const route = api.route.current;
+        if (route.name !== "session") {
+          api.ui.toast({ variant: "warning", message: "Open a session first" });
+          return;
+        }
+        api.route.navigate("plan-comments", {
+          sessionID: route.params.sessionID,
+        });
+      },
+    },
     {
       title: "Clear plan comments",
       value: "plan-comments.clear",
       category: "Plan",
       description: "Remove all comments for the current session",
       onSelect() {
-        const sid = session(api);
-        if (!sid) {
-          api.ui.toast({ variant: "warning", message: "No active session" });
+        const route = api.route.current;
+        if (route.name === "session") {
+          store.clear(route.params.sessionID);
+          api.ui.toast({ variant: "success", message: "Comments cleared" });
           return;
         }
-        store.clear(sid);
-        api.ui.toast({ variant: "success", message: "Comments cleared" });
+        api.ui.toast({ variant: "warning", message: "No active session" });
       },
     },
   ]);
