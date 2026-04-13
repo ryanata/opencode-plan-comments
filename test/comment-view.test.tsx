@@ -691,8 +691,8 @@ describe("Deferred injection", () => {
     await app.renderOnce();
     await tick();
 
-    // Store should be cleared
-    expect(store.all(sid)).toHaveLength(0);
+    // Store should NOT be cleared yet — only cleared when ref callback consumes pending
+    expect(store.all(sid)).toHaveLength(2);
 
     // Should have navigated back
     expect(m.navigated.length).toBeGreaterThanOrEqual(1);
@@ -746,6 +746,9 @@ describe("Deferred injection", () => {
     expect(calls[0].parts![0].text).toContain("<plan-feedback>");
     expect(calls[0].parts![0].text).toContain("fix this");
     expect(calls[0].parts![0].text).toContain("refactor");
+
+    // NOW store should be cleared (consumed by ref callback)
+    expect(store.all(sid)).toHaveLength(0);
   });
 
   test("escape with no comments does not set pending", async () => {
@@ -1098,5 +1101,64 @@ describe("Deferred injection", () => {
     // Parent ref should have received the same ref
     expect(refs).toHaveLength(1);
     expect(refs[0]).toBe(spy);
+  });
+
+  test("comments persist after escape and are available when re-entering /comment", async () => {
+    const sid = "defer-persist-" + Date.now();
+    store.add(sid, "buggy code", "fix the bug");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    // First visit: render CommentView, press escape
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+    app.renderer.destroy();
+
+    // Comments should still be in the store (not cleared until prompt submission)
+    expect(store.all(sid)).toHaveLength(1);
+    expect(store.all(sid)[0].text).toBe("fix the bug");
+
+    // Second visit: re-render CommentView (simulates /comment again)
+    const app2 = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app2.renderer.destroy();
+
+    await app2.renderOnce();
+    const frame = app2.captureCharFrame();
+
+    // The comment should appear in the sidebar
+    expect(frame).toContain("fix the bug");
   });
 });

@@ -111,4 +111,14 @@ describe("store", () => {
     const ids = store.all(session).map((c) => c.id);
     expect(new Set(ids).size).toBe(3);
   });
+
+  test("edit returns new object reference (not mutated in-place)", () => {
+    store.add(session, "code", "original");
+    const before = store.all(session)[0];
+    store.edit(session, before.id, "updated");
+    const after = store.all(session)[0];
+    expect(after.text).toBe("updated");
+    expect(after).not.toBe(before);
+    expect(before.text).toBe("original");
+  });
 });

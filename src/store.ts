@@ -31,8 +31,8 @@ export function remove(session: string, id: string) {
 export function edit(session: string, id: string, text: string) {
   const list = data.get(session);
   if (!list) return;
-  const hit = list.find((c) => c.id === id);
-  if (hit) hit.text = text;
+  const idx = list.findIndex((c) => c.id === id);
+  if (idx >= 0) list[idx] = { ...list[idx], text };
 }
 
 export function all(session: string): Comment[] {

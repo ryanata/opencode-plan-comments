@@ -35,7 +35,7 @@ let prompt: TuiPromptRef | undefined;
 // Deferred prompt injection: stored when back() runs (prompt is undefined
 // because the session view is unmounted), applied when the ref callback
 // fires after the session re-mounts.
-let pending: TuiPromptInfo | undefined;
+let pending: { info: TuiPromptInfo; session: string } | undefined;
 
 // Reactivity: local signal that store mutations bump
 const [rev, bump] = createSignal(0);
@@ -79,22 +79,24 @@ function CommentView(props: {
     if (comments.length > 0) {
       const label = `[${comments.length} inline comment${comments.length > 1 ? "s" : ""}]`;
       pending = {
-        input: label + " ",
-        parts: [
-          {
-            type: "text" as const,
-            text: format(comments),
-            source: {
-              text: {
-                start: 0,
-                end: label.length,
-                value: label,
+        session: sid(),
+        info: {
+          input: label + " ",
+          parts: [
+            {
+              type: "text" as const,
+              text: format(comments),
+              source: {
+                text: {
+                  start: 0,
+                  end: label.length,
+                  value: label,
+                },
               },
             },
-          },
-        ],
+          ],
+        },
       };
-      clearComments(sid());
     }
     props.api.route.navigate("session", { sessionID: sid() });
   }
@@ -341,7 +343,8 @@ const tui: TuiPlugin = async (api) => {
               prompt = r;
               props.ref?.(r);
               if (r && pending) {
-                r.set(pending);
+                r.set(pending.info);
+                clearComments(pending.session);
                 pending = undefined;
               }
             }}
