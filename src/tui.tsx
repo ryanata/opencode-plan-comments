@@ -2,10 +2,12 @@ import type {
   TuiPlugin,
   TuiPluginApi,
   TuiPluginModule,
+  TuiPromptRef,
 } from "@opencode-ai/plugin/tui";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import * as store from "./store";
+import { format } from "./format";
 
 function truncate(str: string, max: number) {
   if (str.length <= max) return str;
@@ -26,6 +28,9 @@ function output(api: TuiPluginApi, sid: string): string {
     .trim();
 }
 
+// Module-level ref captured by the prompt slot
+let prompt: TuiPromptRef | undefined;
+
 function CommentView(props: {
   api: TuiPluginApi;
   params?: Record<string, unknown>;
@@ -34,27 +39,47 @@ function CommentView(props: {
   const theme = () => props.api.theme.current;
   const text = createMemo(() => output(props.api, sid()));
   const [tick, setTick] = createSignal(0);
+  const [selected, setSelected] = createSignal(0);
 
   const list = createMemo(() => {
     tick();
     return store.all(sid());
   });
 
-  const pending = createMemo(() => list().filter((c) => !c.resolved).length);
-
   const timer = setInterval(() => setTick((n) => n + 1), 500);
-  props.api.lifecycle.onDispose(() => clearInterval(timer));
+  onCleanup(() => clearInterval(timer));
 
   function back() {
+    const comments = store.all(sid());
+    if (comments.length > 0 && prompt) {
+      const label = `[${comments.length} inline comment${comments.length > 1 ? "s" : ""}]`;
+      prompt.set({
+        input: label + " ",
+        parts: [
+          {
+            type: "text" as const,
+            text: format(comments),
+            source: {
+              text: {
+                start: 0,
+                end: label.length,
+                value: label,
+              },
+            },
+          },
+        ],
+      });
+      store.clear(sid());
+    }
     props.api.route.navigate("session", { sessionID: sid() });
   }
 
   function capture() {
     const sel = (props.api.renderer as any).getSelection?.();
-    const selected = sel?.getSelectedText?.();
-    if (!selected?.trim()) return;
+    const txt = sel?.getSelectedText?.();
+    if (!txt?.trim()) return;
 
-    const excerpt = selected;
+    const excerpt = txt;
     props.api.ui.dialog.replace(() => (
       <props.api.ui.DialogPrompt
         title="Comment on selection"
@@ -86,12 +111,85 @@ function CommentView(props: {
     ));
   }
 
+  function clamp(idx: number) {
+    const len = list().length;
+    if (len === 0) return 0;
+    return Math.max(0, Math.min(idx, len - 1));
+  }
+
   useKeyboard((evt) => {
+    if (props.api.ui.dialog.open) return;
+
     if (evt.name === "escape") {
-      if (props.api.ui.dialog.open) return;
       evt.preventDefault();
       evt.stopPropagation();
       back();
+      return;
+    }
+
+    if (evt.name === "j" || evt.name === "down") {
+      evt.preventDefault();
+      setSelected((n) => clamp(n + 1));
+      return;
+    }
+
+    if (evt.name === "k" || evt.name === "up") {
+      evt.preventDefault();
+      setSelected((n) => clamp(n - 1));
+      return;
+    }
+
+    if (evt.name === "d") {
+      const items = list();
+      const idx = selected();
+      const item = items[idx];
+      if (!item) return;
+      evt.preventDefault();
+      store.remove(sid(), item.id);
+      setTick((n) => n + 1);
+      setSelected(clamp(idx >= items.length - 1 ? idx - 1 : idx));
+      return;
+    }
+
+    if (evt.name === "e") {
+      const items = list();
+      const item = items[selected()];
+      if (!item) return;
+      evt.preventDefault();
+      props.api.ui.dialog.replace(() => (
+        <props.api.ui.DialogPrompt
+          title="Edit comment"
+          placeholder="Your feedback..."
+          initial={item.text}
+          description={() => (
+            <box>
+              <text fg={theme().textMuted} wrapMode="char">
+                {truncate(item.excerpt.trim(), 120)}
+              </text>
+            </box>
+          )}
+          onConfirm={(value) => {
+            if (!value.trim()) {
+              props.api.ui.toast({
+                variant: "warning",
+                message: "Comment cannot be empty",
+              });
+              return;
+            }
+            store.edit(sid(), item.id, value.trim());
+            props.api.ui.dialog.clear();
+            props.api.ui.toast({
+              variant: "success",
+              message: "Comment updated",
+            });
+            setTick((n) => n + 1);
+          }}
+          onCancel={() => {
+            props.api.ui.dialog.clear();
+          }}
+        />
+      ));
+      return;
     }
   });
 
@@ -101,7 +199,6 @@ function CommentView(props: {
       flexGrow={1}
       onMouseUp={(evt: any) => {
         evt.stopPropagation();
-        // Small delay so the selection is finalized before we read it
         setTimeout(capture, 10);
       }}
     >
@@ -120,7 +217,7 @@ function CommentView(props: {
         paddingRight={1}
         paddingTop={1}
       >
-        {/* Left: plan text */}
+        {/* Left: assistant output */}
         <box flexGrow={1} paddingRight={2}>
           <Show
             when={text()}
@@ -150,6 +247,7 @@ function CommentView(props: {
           borderColor={theme().border}
           paddingLeft={1}
           paddingRight={1}
+          flexDirection="column"
         >
           <text fg={theme().text}>
             <b>Comments</b>
@@ -157,25 +255,23 @@ function CommentView(props: {
           <Show when={list().length === 0}>
             <box marginTop={1}>
               <text fg={theme().textMuted} wrapMode="char">
-                Select text on the left to leave a comment
+                Select text to leave a comment
               </text>
             </box>
           </Show>
           <scrollbox flexGrow={1} marginTop={1}>
             <For each={list()}>
-              {(item) => (
-                <box marginBottom={1}>
+              {(item, idx) => (
+                <box
+                  marginBottom={1}
+                  bg={idx() === selected() ? theme().selection : undefined}
+                  paddingLeft={idx() === selected() ? 1 : 0}
+                >
                   <text fg={theme().textMuted} wrapMode="char">
                     {">" + truncate(item.excerpt.trim(), 50)}
                   </text>
-                  <text
-                    fg={item.resolved ? theme().textMuted : theme().text}
-                    wrapMode="char"
-                  >
+                  <text fg={theme().text} wrapMode="char">
                     {item.text}
-                  </text>
-                  <text fg={item.resolved ? theme().success : theme().warning}>
-                    {item.resolved ? "[resolved]" : "[pending]"}
                   </text>
                 </box>
               )}
@@ -194,9 +290,13 @@ function CommentView(props: {
         border={["top"]}
         borderColor={theme().border}
       >
-        <text fg={theme().textMuted}>esc back to session</text>
-        <text fg={pending() > 0 ? theme().warning : theme().textMuted}>
-          {pending() > 0 ? `${pending()} pending` : "no comments"}
+        <text fg={theme().textMuted}>
+          esc back j/k navigate d delete e edit
+        </text>
+        <text fg={list().length > 0 ? theme().warning : theme().textMuted}>
+          {list().length > 0
+            ? `${list().length} comment${list().length > 1 ? "s" : ""}`
+            : "no comments"}
         </text>
       </box>
     </box>
@@ -204,6 +304,27 @@ function CommentView(props: {
 }
 
 const tui: TuiPlugin = async (api) => {
+  // Capture PromptRef via session_prompt slot
+  api.slots.register({
+    order: 100,
+    slots: {
+      session_prompt(_ctx, props) {
+        return (
+          <api.ui.Prompt
+            visible={props.visible}
+            disabled={props.disabled}
+            ref={(r) => {
+              prompt = r;
+              props.ref?.(r);
+            }}
+            onSubmit={props.on_submit}
+            sessionID={props.session_id}
+          />
+        );
+      },
+    },
+  });
+
   api.route.register([
     {
       name: "plan-comments",

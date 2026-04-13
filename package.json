@@ -1,15 +1,13 @@
 {
   "name": "opencode-plan-comments",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server.ts",
     "./tui": "./src/tui.tsx"
   },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.4.0",
-    "@opencode-ai/sdk": ">=1.4.0",
     "@opentui/core": ">=0.1.97",
     "@opentui/solid": ">=0.1.97"
   }
