@@ -4,7 +4,7 @@ import type {
   TuiPluginModule,
   TuiPromptRef,
 } from "@opencode-ai/plugin/tui";
-import { createMemo, createSignal, For, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import * as store from "./store";
 import { format } from "./format";
@@ -38,16 +38,12 @@ function CommentView(props: {
   const sid = () => (props.params?.sessionID as string) ?? "";
   const theme = () => props.api.theme.current;
   const text = createMemo(() => output(props.api, sid()));
-  const [tick, setTick] = createSignal(0);
   const [selected, setSelected] = createSignal(0);
 
   const list = createMemo(() => {
-    tick();
+    store.revision();
     return store.all(sid());
   });
-
-  const timer = setInterval(() => setTick((n) => n + 1), 500);
-  onCleanup(() => clearInterval(timer));
 
   function back() {
     const comments = store.all(sid());
@@ -102,7 +98,6 @@ function CommentView(props: {
           store.add(sid(), excerpt, value.trim());
           props.api.ui.dialog.clear();
           props.api.ui.toast({ variant: "success", message: "Comment added" });
-          setTick((n) => n + 1);
         }}
         onCancel={() => {
           props.api.ui.dialog.clear();
@@ -146,7 +141,6 @@ function CommentView(props: {
       if (!item) return;
       evt.preventDefault();
       store.remove(sid(), item.id);
-      setTick((n) => n + 1);
       setSelected(clamp(idx >= items.length - 1 ? idx - 1 : idx));
       return;
     }
@@ -182,7 +176,6 @@ function CommentView(props: {
               variant: "success",
               message: "Comment updated",
             });
-            setTick((n) => n + 1);
           }}
           onCancel={() => {
             props.api.ui.dialog.clear();

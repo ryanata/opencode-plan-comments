@@ -1,3 +1,5 @@
+import { createSignal } from "solid-js";
+
 export type Comment = {
   id: string;
   excerpt: string;
@@ -5,40 +7,50 @@ export type Comment = {
   timestamp: number;
 };
 
-const store = new Map<string, Comment[]>();
+const data = new Map<string, Comment[]>();
 let counter = 0;
 
+const [rev, setRev] = createSignal(0);
+
+export function revision() {
+  return rev();
+}
+
 export function add(session: string, excerpt: string, text: string) {
-  const list = store.get(session) ?? [];
+  const list = data.get(session) ?? [];
   list.push({
     id: `pc-${++counter}`,
     excerpt,
     text,
     timestamp: Date.now(),
   });
-  store.set(session, list);
+  data.set(session, list);
+  setRev((n) => n + 1);
 }
 
 export function remove(session: string, id: string) {
-  const list = store.get(session);
+  const list = data.get(session);
   if (!list) return;
-  store.set(
+  data.set(
     session,
     list.filter((c) => c.id !== id),
   );
+  setRev((n) => n + 1);
 }
 
 export function edit(session: string, id: string, text: string) {
-  const list = store.get(session);
+  const list = data.get(session);
   if (!list) return;
   const hit = list.find((c) => c.id === id);
   if (hit) hit.text = text;
+  setRev((n) => n + 1);
 }
 
 export function all(session: string): Comment[] {
-  return store.get(session) ?? [];
+  return [...(data.get(session) ?? [])];
 }
 
 export function clear(session: string) {
-  store.delete(session);
+  data.delete(session);
+  setRev((n) => n + 1);
 }
