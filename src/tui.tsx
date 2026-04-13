@@ -111,6 +111,7 @@ function CommentView(props: {
           </box>
         )}
         onConfirm={(value) => {
+          if (!props.api.ui.dialog.open) return;
           if (!value.trim()) {
             props.api.ui.toast({
               variant: "warning",
@@ -118,8 +119,8 @@ function CommentView(props: {
             });
             return;
           }
-          addComment(sid(), excerpt, value.trim());
           props.api.ui.dialog.clear();
+          addComment(sid(), excerpt, value.trim());
           props.api.ui.toast({ variant: "success", message: "Comment added" });
         }}
         onCancel={() => {
@@ -186,6 +187,7 @@ function CommentView(props: {
             </box>
           )}
           onConfirm={(value) => {
+            if (!props.api.ui.dialog.open) return;
             if (!value.trim()) {
               props.api.ui.toast({
                 variant: "warning",
@@ -193,8 +195,8 @@ function CommentView(props: {
               });
               return;
             }
-            editComment(sid(), item.id, value.trim());
             props.api.ui.dialog.clear();
+            editComment(sid(), item.id, value.trim());
             props.api.ui.toast({
               variant: "success",
               message: "Comment updated",

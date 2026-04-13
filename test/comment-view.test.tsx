@@ -91,6 +91,7 @@ type MockOpts = {
   messages?: Array<{ id: string; role: string }>;
   parts?: Array<{ type: string; text: string }>;
   sessionID?: string;
+  selection?: string;
 };
 
 function mock(opts: MockOpts = {}) {
@@ -99,12 +100,19 @@ function mock(opts: MockOpts = {}) {
   const toasts: Array<{ variant?: string; message: string }> = [];
   let depth = 0;
   let size: "medium" | "large" | "xlarge" = "medium";
+  // Capture the last DialogPrompt props for double-fire testing
+  let lastPromptProps: Record<string, any> | undefined;
+  let lastReplaceRender: (() => any) | undefined;
 
   const api = {
     app: { version: "0.0.0-test" },
     client: {} as any,
     event: { on: () => () => {} },
-    renderer: {} as any,
+    renderer: {
+      getSelection: () => ({
+        getSelectedText: () => opts.selection ?? "",
+      }),
+    } as any,
     slots: { register: () => "mock" },
     plugins: {
       list: () => [],
@@ -138,14 +146,21 @@ function mock(opts: MockOpts = {}) {
       Dialog: () => null,
       DialogAlert: () => null,
       DialogConfirm: () => null,
-      DialogPrompt: () => null,
+      DialogPrompt: (p: any) => {
+        lastPromptProps = p;
+        return null;
+      },
       DialogSelect: () => null,
       Slot: () => null,
       Prompt: () => null,
       toast: (t: any) => toasts.push(t),
       dialog: {
-        replace: () => {
+        replace: (fn: () => any) => {
           depth = 1;
+          lastReplaceRender = fn;
+          // Call the render function to instantiate the DialogPrompt
+          // so its props (including onConfirm) get captured
+          fn();
         },
         clear: () => {
           depth = 0;
@@ -229,7 +244,14 @@ function mock(opts: MockOpts = {}) {
     },
   } satisfies TuiPluginApi;
 
-  return { api, navigated, toasts };
+  return {
+    api,
+    navigated,
+    toasts,
+    get lastPromptProps() {
+      return lastPromptProps;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -240,19 +262,19 @@ import plugin from "../src/tui";
 
 async function setup(opts: MockOpts = {}) {
   const sid = opts.sessionID ?? "ses-1";
-  const { api, navigated, toasts } = mock(opts);
+  const m = mock(opts);
 
   let render:
     | ((input: { params?: Record<string, unknown> }) => any)
     | undefined;
-  (api as any).route.register = (routes: any[]) => {
+  (m.api as any).route.register = (routes: any[]) => {
     for (const r of routes) {
       if (r.name === "plan-comments") render = r.render;
     }
     return () => {};
   };
 
-  await plugin.tui(api, undefined, {
+  await plugin.tui(m.api, undefined, {
     id: "plan-comments",
     source: "file",
     spec: ".",
@@ -275,7 +297,16 @@ async function setup(opts: MockOpts = {}) {
     height: 40,
   });
 
-  return { app, api, navigated, toasts, sid };
+  return {
+    app,
+    api: m.api,
+    navigated: m.navigated,
+    toasts: m.toasts,
+    sid,
+    get lastPromptProps() {
+      return m.lastPromptProps;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -403,5 +434,151 @@ describe("CommentView", () => {
     await app.renderOnce();
     const frame = app.captureCharFrame();
     expect(frame).toContain("Select text");
+  });
+
+  test("onConfirm double-fire guard: dialog.clear before mutation prevents second add", () => {
+    // Unit test for the guard pattern used in both add and edit dialogs.
+    // DialogPrompt fires onConfirm twice per Enter (useKeyboard + textarea onSubmit).
+    // The plugin guards with: if (!dialog.open) return; dialog.clear(); mutate();
+    // This test proves the pattern works.
+    const sid = "double-fire-add";
+    store.clear(sid);
+
+    let depth = 0;
+    const dialog = {
+      replace: () => {
+        depth = 1;
+      },
+      clear: () => {
+        depth = 0;
+      },
+      get open() {
+        return depth > 0;
+      },
+    };
+
+    // Simulate opening dialog
+    dialog.replace();
+    expect(dialog.open).toBe(true);
+
+    // The onConfirm handler pattern from our plugin:
+    const onConfirm = (value: string) => {
+      if (!dialog.open) return;
+      dialog.clear();
+      store.add(sid, "excerpt", value);
+    };
+
+    // Double-fire: called twice in rapid succession
+    onConfirm("feedback");
+    onConfirm("feedback");
+
+    // Only ONE comment should exist
+    expect(store.all(sid)).toHaveLength(1);
+    expect(store.all(sid)[0].text).toBe("feedback");
+  });
+
+  test("onConfirm double-fire guard: dialog.clear before mutation prevents second edit", () => {
+    const sid = "double-fire-edit";
+    store.clear(sid);
+    store.add(sid, "code", "original");
+    const id = store.all(sid)[0].id;
+
+    let depth = 0;
+    const dialog = {
+      replace: () => {
+        depth = 1;
+      },
+      clear: () => {
+        depth = 0;
+      },
+      get open() {
+        return depth > 0;
+      },
+    };
+
+    dialog.replace();
+
+    // The onConfirm handler pattern from our plugin:
+    const onConfirm = (value: string) => {
+      if (!dialog.open) return;
+      dialog.clear();
+      store.edit(sid, id, value);
+    };
+
+    // Double-fire
+    onConfirm("first edit");
+    onConfirm("second edit");
+
+    // Text should be "first edit", not "second edit"
+    expect(store.all(sid)[0].text).toBe("first edit");
+  });
+
+  test("edit dialog opens via e key and double-fire is guarded", async () => {
+    const { app, api, sid, lastPromptProps } = await setup();
+    cleanup = () => app.renderer.destroy();
+
+    // Add a comment via store + bump signal by pressing a key that triggers
+    // a re-render. We need the list() memo to see the comment.
+    // Since the signal is module-level in tui.tsx, we can't bump it directly.
+    // Instead, we test by verifying that pressing 'e' with no comments
+    // doesn't open dialog (already tested), and test the guard pattern
+    // separately (above). Here we verify the integrated e-key flow
+    // when we CAN get the dialog to open.
+
+    // Use a fresh setup where we pre-seed the store BEFORE the component mounts
+    // so the initial list() memo picks it up.
+    app.renderer.destroy();
+
+    // Re-setup with pre-seeded store
+    const sid2 = "edit-guard-" + Date.now();
+    store.add(sid2, "some code", "original");
+
+    const m = mock({ sessionID: sid2 });
+    let render2:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render2 = r.render;
+      }
+      return () => {};
+    };
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+    const route2 = render2!;
+    const app2 = await testRender(
+      () => route2({ params: { sessionID: sid2 } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app2.renderer.destroy();
+
+    await app2.renderOnce();
+
+    // Press 'e' to open edit dialog
+    app2.mockInput.pressKey("e");
+    await tick();
+
+    expect(m.api.ui.dialog.open).toBe(true);
+    expect(m.lastPromptProps).toBeTruthy();
+    expect(m.lastPromptProps!.onConfirm).toBeInstanceOf(Function);
+
+    // Simulate double-fire
+    m.lastPromptProps!.onConfirm("edited");
+    m.lastPromptProps!.onConfirm("edited again");
+
+    // Should have first edit only
+    const comments = store.all(sid2);
+    expect(comments).toHaveLength(1);
+    expect(comments[0].text).toBe("edited");
   });
 });
