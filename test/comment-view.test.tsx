@@ -648,7 +648,7 @@ describe("Deferred injection", () => {
     expect(m.slotReg!.session_prompt).toBeInstanceOf(Function);
   });
 
-  test("escape with comments stores pending and clears store", async () => {
+  test("escape with comments stores pending, ref applies it, submit clears store", async () => {
     const sid = "defer-" + Date.now();
     store.add(sid, "some code", "fix this");
     store.add(sid, "other code", "refactor");
@@ -747,7 +747,12 @@ describe("Deferred injection", () => {
     expect(calls[0].parts![0].text).toContain("fix this");
     expect(calls[0].parts![0].text).toContain("refactor");
 
-    // NOW store should be cleared (consumed by ref callback)
+    // Store should NOT be cleared yet — only cleared on submit
+    expect(store.all(sid)).toHaveLength(2);
+
+    // Simulate submit — should clear the store
+    expect(m.lastUiPromptProps!.onSubmit).toBeInstanceOf(Function);
+    m.lastUiPromptProps!.onSubmit();
     expect(store.all(sid)).toHaveLength(0);
   });
 
@@ -1160,5 +1165,215 @@ describe("Deferred injection", () => {
 
     // The comment should appear in the sidebar
     expect(frame).toContain("fix the bug");
+  });
+
+  test("comments survive full lifecycle: escape, ref consumes pending, re-enter /comment", async () => {
+    const sid = "defer-full-" + Date.now();
+    store.add(sid, "bad code", "rewrite this");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    // First visit: render CommentView, press escape
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+    app.renderer.destroy();
+
+    // Simulate session re-mount: ref callback consumes pending
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set() {},
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+
+    // Comments should STILL be in the store (not cleared until submit)
+    expect(store.all(sid)).toHaveLength(1);
+    expect(store.all(sid)[0].text).toBe("rewrite this");
+
+    // Re-enter /comment — comments should be visible
+    const app2 = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app2.renderer.destroy();
+
+    await app2.renderOnce();
+    const frame = app2.captureCharFrame();
+    expect(frame).toContain("rewrite this");
+  });
+
+  test("onSubmit clears injected comments and forwards to parent on_submit", async () => {
+    const sid = "defer-submit-" + Date.now();
+    store.add(sid, "code", "feedback");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    // Render CommentView, press escape to set pending
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+    app.renderer.destroy();
+
+    // Simulate session re-mount: ref callback consumes pending
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set() {},
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+    let submitted = false;
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {
+        submitted = true;
+      },
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+
+    // Store still has the comment
+    expect(store.all(sid)).toHaveLength(1);
+
+    // Simulate prompt submission
+    m.lastUiPromptProps!.onSubmit();
+
+    // NOW store should be cleared
+    expect(store.all(sid)).toHaveLength(0);
+
+    // Parent on_submit should have been forwarded
+    expect(submitted).toBe(true);
+  });
+
+  test("onSubmit without prior injection does not clear store and still forwards", async () => {
+    const sid = "defer-submit-noop-" + Date.now();
+    store.add(sid, "code", "keep this");
+
+    const m = mock({ sessionID: sid });
+    (m.api as any).route.register = () => () => {};
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    // Invoke slot directly without any pending — simulates normal prompt submit
+    let submitted = false;
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {
+        submitted = true;
+      },
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+
+    // Simulate ref mount (no pending)
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set() {},
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+    m.lastUiPromptProps!.ref(spy);
+
+    // Submit without injection
+    m.lastUiPromptProps!.onSubmit();
+
+    // Store should be untouched
+    expect(store.all(sid)).toHaveLength(1);
+    expect(store.all(sid)[0].text).toBe("keep this");
+
+    // Parent on_submit still forwarded
+    expect(submitted).toBe(true);
   });
 });

@@ -37,6 +37,10 @@ let prompt: TuiPromptRef | undefined;
 // fires after the session re-mounts.
 let pending: { info: TuiPromptInfo; session: string } | undefined;
 
+// Session whose comments were injected into the prompt but not yet submitted.
+// Cleared on submit so re-entering /comment still shows comments until then.
+let injected: string | undefined;
+
 // Reactivity: local signal that store mutations bump
 const [rev, bump] = createSignal(0);
 
@@ -344,11 +348,17 @@ const tui: TuiPlugin = async (api) => {
               props.ref?.(r);
               if (r && pending) {
                 r.set(pending.info);
-                clearComments(pending.session);
+                injected = pending.session;
                 pending = undefined;
               }
             }}
-            onSubmit={props.on_submit}
+            onSubmit={() => {
+              if (injected) {
+                clearComments(injected);
+                injected = undefined;
+              }
+              props.on_submit?.();
+            }}
             sessionID={props.session_id}
           />
         );
