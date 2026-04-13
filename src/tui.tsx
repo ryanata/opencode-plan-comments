@@ -2,6 +2,7 @@ import type {
   TuiPlugin,
   TuiPluginApi,
   TuiPluginModule,
+  TuiPromptInfo,
   TuiPromptRef,
 } from "@opencode-ai/plugin/tui";
 import { createMemo, createSignal, For, Show } from "solid-js";
@@ -30,6 +31,11 @@ function output(api: TuiPluginApi, sid: string): string {
 
 // Module-level ref captured by the prompt slot
 let prompt: TuiPromptRef | undefined;
+
+// Deferred prompt injection: stored when back() runs (prompt is undefined
+// because the session view is unmounted), applied when the ref callback
+// fires after the session re-mounts.
+let pending: TuiPromptInfo | undefined;
 
 // Reactivity: local signal that store mutations bump
 const [rev, bump] = createSignal(0);
@@ -70,9 +76,9 @@ function CommentView(props: {
 
   function back() {
     const comments = store.all(sid());
-    if (comments.length > 0 && prompt) {
+    if (comments.length > 0) {
       const label = `[${comments.length} inline comment${comments.length > 1 ? "s" : ""}]`;
-      prompt.set({
+      pending = {
         input: label + " ",
         parts: [
           {
@@ -87,7 +93,7 @@ function CommentView(props: {
             },
           },
         ],
-      });
+      };
       clearComments(sid());
     }
     props.api.route.navigate("session", { sessionID: sid() });
@@ -334,6 +340,10 @@ const tui: TuiPlugin = async (api) => {
             ref={(r) => {
               prompt = r;
               props.ref?.(r);
+              if (r && pending) {
+                r.set(pending);
+                pending = undefined;
+              }
             }}
             onSubmit={props.on_submit}
             sessionID={props.session_id}

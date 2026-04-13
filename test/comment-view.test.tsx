@@ -4,6 +4,7 @@ import { testRender } from "@opentui/solid";
 import { RGBA } from "@opentui/core";
 import type { TuiPluginApi, TuiPromptInfo } from "@opencode-ai/plugin/tui";
 import * as store from "../src/store";
+import { format } from "../src/format";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -103,6 +104,9 @@ function mock(opts: MockOpts = {}) {
   // Capture the last DialogPrompt props for double-fire testing
   let lastPromptProps: Record<string, any> | undefined;
   let lastReplaceRender: (() => any) | undefined;
+  // Capture slot registrations and Prompt component props
+  let slotReg: Record<string, Function> | undefined;
+  let lastUiPromptProps: Record<string, any> | undefined;
 
   const api = {
     app: { version: "0.0.0-test" },
@@ -113,7 +117,12 @@ function mock(opts: MockOpts = {}) {
         getSelectedText: () => opts.selection ?? "",
       }),
     } as any,
-    slots: { register: () => "mock" },
+    slots: {
+      register: (reg: any) => {
+        if (reg.slots) slotReg = reg.slots;
+        return "mock";
+      },
+    },
     plugins: {
       list: () => [],
       activate: async () => false,
@@ -152,7 +161,10 @@ function mock(opts: MockOpts = {}) {
       },
       DialogSelect: () => null,
       Slot: () => null,
-      Prompt: () => null,
+      Prompt: (p: any) => {
+        lastUiPromptProps = p;
+        return null;
+      },
       toast: (t: any) => toasts.push(t),
       dialog: {
         replace: (fn: () => any) => {
@@ -251,6 +263,12 @@ function mock(opts: MockOpts = {}) {
     get lastPromptProps() {
       return lastPromptProps;
     },
+    get slotReg() {
+      return slotReg;
+    },
+    get lastUiPromptProps() {
+      return lastUiPromptProps;
+    },
   };
 }
 
@@ -305,6 +323,12 @@ async function setup(opts: MockOpts = {}) {
     sid,
     get lastPromptProps() {
       return m.lastPromptProps;
+    },
+    get slotReg() {
+      return m.slotReg;
+    },
+    get lastUiPromptProps() {
+      return m.lastUiPromptProps;
     },
   };
 }
@@ -580,5 +604,499 @@ describe("CommentView", () => {
     const comments = store.all(sid2);
     expect(comments).toHaveLength(1);
     expect(comments[0].text).toBe("edited");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deferred injection tests
+// ---------------------------------------------------------------------------
+
+describe("Deferred injection", () => {
+  let cleanup: (() => void) | undefined;
+
+  afterEach(() => {
+    cleanup?.();
+    cleanup = undefined;
+  });
+
+  test("session_prompt slot is registered with render function", async () => {
+    const m = mock();
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    expect(m.slotReg).toBeDefined();
+    expect(m.slotReg!.session_prompt).toBeInstanceOf(Function);
+  });
+
+  test("escape with comments stores pending and clears store", async () => {
+    const sid = "defer-" + Date.now();
+    store.add(sid, "some code", "fix this");
+    store.add(sid, "other code", "refactor");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await app.renderOnce();
+
+    // Press escape to trigger back()
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+
+    // Store should be cleared
+    expect(store.all(sid)).toHaveLength(0);
+
+    // Should have navigated back
+    expect(m.navigated.length).toBeGreaterThanOrEqual(1);
+    const nav = m.navigated[m.navigated.length - 1];
+    expect(nav.name).toBe("session");
+    expect(nav.params?.sessionID).toBe(sid);
+
+    // Now simulate session re-mount: invoke the slot's ref callback
+    // with a spy TuiPromptRef. The slot render function was captured by
+    // our enhanced mock.
+    expect(m.slotReg).toBeDefined();
+    expect(m.slotReg!.session_prompt).toBeInstanceOf(Function);
+
+    const calls: TuiPromptInfo[] = [];
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set(p: TuiPromptInfo) {
+        calls.push(p);
+      },
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+
+    // Invoke the slot render — this creates <api.ui.Prompt> which captures
+    // its ref prop in lastUiPromptProps
+    const ctx = {};
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt(ctx, slotProps);
+
+    // The mock Prompt component should have been invoked with a ref callback
+    expect(m.lastUiPromptProps).toBeDefined();
+    expect(m.lastUiPromptProps!.ref).toBeInstanceOf(Function);
+
+    // Simulate mount: call the ref with our spy
+    m.lastUiPromptProps!.ref(spy);
+
+    // pending should have been applied
+    expect(calls).toHaveLength(1);
+    expect(calls[0].input).toBe("[2 inline comments] ");
+    expect(calls[0].parts).toHaveLength(1);
+    expect(calls[0].parts![0].type).toBe("text");
+    expect(calls[0].parts![0].text).toContain("<plan-feedback>");
+    expect(calls[0].parts![0].text).toContain("fix this");
+    expect(calls[0].parts![0].text).toContain("refactor");
+  });
+
+  test("escape with no comments does not set pending", async () => {
+    const sid = "defer-empty-" + Date.now();
+    store.clear(sid);
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await app.renderOnce();
+
+    // Press escape
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+
+    // Navigated back
+    expect(m.navigated.length).toBeGreaterThanOrEqual(1);
+
+    // Invoke slot ref callback — set() should NOT be called
+    const calls: TuiPromptInfo[] = [];
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set(p: TuiPromptInfo) {
+        calls.push(p);
+      },
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+
+    expect(calls).toHaveLength(0);
+  });
+
+  test("pending is consumed after first ref callback (not re-applied)", async () => {
+    const sid = "defer-once-" + Date.now();
+    store.add(sid, "code", "feedback");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+
+    const calls: TuiPromptInfo[] = [];
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set(p: TuiPromptInfo) {
+        calls.push(p);
+      },
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+
+    // First ref callback — should apply pending
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+    expect(calls).toHaveLength(1);
+
+    // Second ref callback — pending should be consumed, not re-applied
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+    expect(calls).toHaveLength(1);
+  });
+
+  test("ref(undefined) does not trigger pending application", async () => {
+    const sid = "defer-undef-" + Date.now();
+    store.add(sid, "code", "feedback");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+
+    // Call ref with undefined (simulating unmount) — should NOT crash or consume pending
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(undefined);
+
+    // Now call with real ref — pending should still be there
+    const calls: TuiPromptInfo[] = [];
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set(p: TuiPromptInfo) {
+        calls.push(p);
+      },
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].input).toBe("[1 inline comment] ");
+  });
+
+  test("pending payload has correct extmark source.text structure", async () => {
+    const sid = "defer-extmark-" + Date.now();
+    store.add(sid, "selected code", "needs refactoring");
+
+    const m = mock({ sessionID: sid });
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await app.renderOnce();
+    app.mockInput.pressEscape();
+    await tick();
+    await app.renderOnce();
+    await tick();
+
+    const calls: TuiPromptInfo[] = [];
+    const spy: any = {
+      focused: false,
+      current: { input: "", parts: [] },
+      set(p: TuiPromptInfo) {
+        calls.push(p);
+      },
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+    };
+
+    const slotProps = {
+      session_id: sid,
+      visible: true,
+      disabled: false,
+      ref: undefined as any,
+      on_submit: () => {},
+    };
+    m.slotReg!.session_prompt({}, slotProps);
+    m.lastUiPromptProps!.ref(spy);
+
+    expect(calls).toHaveLength(1);
+    const payload = calls[0];
+    const label = "[1 inline comment]";
+
+    // input should be label + trailing space
+    expect(payload.input).toBe(label + " ");
+
+    // parts should have one TextPart with source.text extmark info
+    expect(payload.parts).toHaveLength(1);
+    const part = payload.parts![0] as any;
+    expect(part.type).toBe("text");
+    expect(part.source.text.start).toBe(0);
+    expect(part.source.text.end).toBe(label.length);
+    expect(part.source.text.value).toBe(label);
+
+    // Full text should match format() output
+    const expected = format([
+      {
+        id: "any",
+        excerpt: "selected code",
+        text: "needs refactoring",
+        timestamp: 0,
+      },
+    ]);
+    expect(part.text).toContain("<plan-feedback>");
+    expect(part.text).toContain("needs refactoring");
+    expect(part.text).toContain("selected code");
+  });
+
+  test("slot forwards ref callback to parent props.ref", async () => {
+    const m = mock();
+    (m.api as any).route.register = () => () => {};
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    expect(m.slotReg).toBeDefined();
+
+    // The slot should forward the ref to the parent's ref callback
+    const refs: any[] = [];
+    const slotProps = {
+      session_id: "ses-1",
+      visible: true,
+      disabled: false,
+      ref: (r: any) => refs.push(r),
+      on_submit: () => {},
+    };
+
+    m.slotReg!.session_prompt({}, slotProps);
+    const spy = {
+      set() {},
+      reset() {},
+      blur() {},
+      focus() {},
+      submit() {},
+      focused: false,
+      current: { input: "", parts: [] },
+    };
+    m.lastUiPromptProps!.ref(spy);
+
+    // Parent ref should have received the same ref
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toBe(spy);
   });
 });
