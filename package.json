@@ -6,9 +6,19 @@
     ".": "./src/index.ts",
     "./tui": "./src/tui.tsx"
   },
+  "scripts": {
+    "test": "bun test"
+  },
   "peerDependencies": {
     "@opencode-ai/plugin": ">=1.4.0",
     "@opentui/core": ">=0.1.97",
-    "@opentui/solid": ">=0.1.97"
+    "@opentui/solid": ">=0.1.97",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.4.3",
+    "@opentui/core": "0.1.97",
+    "@opentui/solid": "0.1.97",
+    "solid-js": "1.9.10"
   }
 }

@@ -1,5 +1,3 @@
-import { createSignal } from "solid-js";
-
 export type Comment = {
   id: string;
   excerpt: string;
@@ -10,12 +8,6 @@ export type Comment = {
 const data = new Map<string, Comment[]>();
 let counter = 0;
 
-const [rev, setRev] = createSignal(0);
-
-export function revision() {
-  return rev();
-}
-
 export function add(session: string, excerpt: string, text: string) {
   const list = data.get(session) ?? [];
   list.push({
@@ -25,7 +17,6 @@ export function add(session: string, excerpt: string, text: string) {
     timestamp: Date.now(),
   });
   data.set(session, list);
-  setRev((n) => n + 1);
 }
 
 export function remove(session: string, id: string) {
@@ -35,7 +26,6 @@ export function remove(session: string, id: string) {
     session,
     list.filter((c) => c.id !== id),
   );
-  setRev((n) => n + 1);
 }
 
 export function edit(session: string, id: string, text: string) {
@@ -43,7 +33,6 @@ export function edit(session: string, id: string, text: string) {
   if (!list) return;
   const hit = list.find((c) => c.id === id);
   if (hit) hit.text = text;
-  setRev((n) => n + 1);
 }
 
 export function all(session: string): Comment[] {
@@ -52,5 +41,4 @@ export function all(session: string): Comment[] {
 
 export function clear(session: string) {
   data.delete(session);
-  setRev((n) => n + 1);
 }

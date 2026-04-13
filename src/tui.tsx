@@ -31,6 +31,29 @@ function output(api: TuiPluginApi, sid: string): string {
 // Module-level ref captured by the prompt slot
 let prompt: TuiPromptRef | undefined;
 
+// Reactivity: local signal that store mutations bump
+const [rev, bump] = createSignal(0);
+
+function addComment(session: string, excerpt: string, text: string) {
+  store.add(session, excerpt, text);
+  bump((n) => n + 1);
+}
+
+function removeComment(session: string, id: string) {
+  store.remove(session, id);
+  bump((n) => n + 1);
+}
+
+function editComment(session: string, id: string, text: string) {
+  store.edit(session, id, text);
+  bump((n) => n + 1);
+}
+
+function clearComments(session: string) {
+  store.clear(session);
+  bump((n) => n + 1);
+}
+
 function CommentView(props: {
   api: TuiPluginApi;
   params?: Record<string, unknown>;
@@ -41,7 +64,7 @@ function CommentView(props: {
   const [selected, setSelected] = createSignal(0);
 
   const list = createMemo(() => {
-    store.revision();
+    rev();
     return store.all(sid());
   });
 
@@ -65,7 +88,7 @@ function CommentView(props: {
           },
         ],
       });
-      store.clear(sid());
+      clearComments(sid());
     }
     props.api.route.navigate("session", { sessionID: sid() });
   }
@@ -95,7 +118,7 @@ function CommentView(props: {
             });
             return;
           }
-          store.add(sid(), excerpt, value.trim());
+          addComment(sid(), excerpt, value.trim());
           props.api.ui.dialog.clear();
           props.api.ui.toast({ variant: "success", message: "Comment added" });
         }}
@@ -140,7 +163,7 @@ function CommentView(props: {
       const item = items[idx];
       if (!item) return;
       evt.preventDefault();
-      store.remove(sid(), item.id);
+      removeComment(sid(), item.id);
       setSelected(clamp(idx >= items.length - 1 ? idx - 1 : idx));
       return;
     }
@@ -154,7 +177,7 @@ function CommentView(props: {
         <props.api.ui.DialogPrompt
           title="Edit comment"
           placeholder="Your feedback..."
-          initial={item.text}
+          value={item.text}
           description={() => (
             <box>
               <text fg={theme().textMuted} wrapMode="char">
@@ -170,7 +193,7 @@ function CommentView(props: {
               });
               return;
             }
-            store.edit(sid(), item.id, value.trim());
+            editComment(sid(), item.id, value.trim());
             props.api.ui.dialog.clear();
             props.api.ui.toast({
               variant: "success",
@@ -351,7 +374,7 @@ const tui: TuiPlugin = async (api) => {
       onSelect() {
         const route = api.route.current;
         if (route.name === "session") {
-          store.clear(route.params.sessionID);
+          clearComments(route.params.sessionID);
           api.ui.toast({ variant: "success", message: "Comments cleared" });
           return;
         }
