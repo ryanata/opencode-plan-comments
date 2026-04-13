@@ -2,6 +2,11 @@
   "name": "opencode-plan-comments",
   "version": "0.2.0",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ryanata/opencode-plan-comments.git"
+  },
   "exports": {
     ".": "./src/index.ts",
     "./tui": "./src/tui.tsx"
