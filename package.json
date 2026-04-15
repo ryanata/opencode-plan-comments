@@ -1,6 +1,6 @@
 {
   "name": "opencode-plan-comments",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "license": "MIT",
   "description": "Inline comment plugin for opencode — leave feedback on agent plan output",
@@ -20,12 +20,12 @@
     "dist"
   ],
   "exports": {
-    ".": "./dist/index.js",
-    "./tui": "./dist/tui.js"
+    ".": "./src/index.ts",
+    "./tui": "./src/tui.tsx"
   },
   "scripts": {
     "build": "rm -rf dist && NODE_ENV=production npx bun build src/tui.tsx src/index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin --external @opentui/core --external @opentui/solid --external solid-js",
-    "prepublishOnly": "npx bun run build",
+    "release": "npx bun script/publish.ts",
     "test": "bun test"
   },
   "peerDependencies": {
