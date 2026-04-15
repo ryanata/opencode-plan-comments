@@ -2,7 +2,7 @@
  * Build, rewrite package.json exports from src → dist for npm publish,
  * run npm publish, then restore the original exports.
  *
- * Usage: bun script/publish.ts [-- --otp=CODE]
+ * Usage: bun script/publish.ts [--otp=CODE]
  */
 import { $ } from "bun";
 
@@ -27,18 +27,11 @@ console.log("Rewrote exports for publish:", pkg.exports);
 
 try {
   const args = process.argv.slice(2);
-  await $`npm publish ${args}`.env(process.env);
-} finally {
-  await Bun.write(path, original);
-  console.log("Restored original exports");
-}
-
-await Bun.write(path, JSON.stringify(pkg, null, 2) + "\n");
-console.log("Rewrote exports for publish:", pkg.exports);
-
-try {
-  const args = process.argv.slice(2);
-  await $`npm publish ${args}`.env(process.env);
+  const result = await $`npm publish ${args}`.env(process.env).quiet();
+  // Print only the success line
+  const out = result.stderr.toString();
+  const ok = out.match(/^\+ .+$/m);
+  if (ok) console.log(ok[0]);
 } finally {
   await Bun.write(path, original);
   console.log("Restored original exports");
