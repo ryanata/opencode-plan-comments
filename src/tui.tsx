@@ -5,7 +5,7 @@ import type {
   TuiPromptInfo,
   TuiPromptRef,
 } from "@opencode-ai/plugin/tui";
-import { createMemo, createSignal, For, Show } from "solid-js";
+import { createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import * as store from "./store";
 import { format } from "./format";
@@ -15,9 +15,19 @@ function truncate(str: string, max: number) {
   return str.slice(0, max - 1) + "…";
 }
 
-function output(api: TuiPluginApi, sid: string): string {
+async function output(api: TuiPluginApi, sid: string): Promise<string> {
   const msgs = api.state.session.messages(sid);
-  const last = [...msgs].reverse().find((m) => m.role === "assistant");
+
+  // Fetch revert state so we skip reverted messages
+  let revert: string | undefined;
+  try {
+    const res = await api.client.session.get({ sessionID: sid });
+    revert = res.data?.revert?.messageID;
+  } catch {}
+
+  const last = [...msgs]
+    .reverse()
+    .find((m) => m.role === "assistant" && (!revert || m.id < revert));
   if (!last) return "";
   const parts = api.state.part(last.id);
   return parts
@@ -70,7 +80,7 @@ function CommentView(props: {
 }) {
   const sid = () => (props.params?.sessionID as string) ?? "";
   const theme = () => props.api.theme.current;
-  const text = createMemo(() => output(props.api, sid()));
+  const [text] = createResource(sid, (id) => output(props.api, id));
   const [selected, setSelected] = createSignal(0);
 
   const list = createMemo(() => {
@@ -334,6 +344,16 @@ function CommentView(props: {
 }
 
 const tui: TuiPlugin = async (api) => {
+  // Runtime guard for older opencode versions missing required APIs
+  if (!api.slots || !api.ui?.Prompt) {
+    api.ui?.toast?.({
+      variant: "error",
+      message:
+        "plan-comments requires opencode >= v1.3.14 (session_prompt slot support)",
+    });
+    return;
+  }
+
   // Capture PromptRef via session_prompt slot
   api.slots.register({
     order: 100,

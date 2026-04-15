@@ -91,8 +91,10 @@ function theme(): TuiPluginApi["theme"]["current"] {
 type MockOpts = {
   messages?: Array<{ id: string; role: string }>;
   parts?: Array<{ type: string; text: string }>;
+  partsByMsg?: Record<string, Array<{ type: string; text: string }>>;
   sessionID?: string;
   selection?: string;
+  revert?: { messageID: string };
 };
 
 function mock(opts: MockOpts = {}) {
@@ -110,7 +112,13 @@ function mock(opts: MockOpts = {}) {
 
   const api = {
     app: { version: "0.0.0-test" },
-    client: {} as any,
+    client: {
+      session: {
+        get: async (_params: { sessionID: string }) => ({
+          data: opts.revert ? { revert: opts.revert } : {},
+        }),
+      },
+    } as any,
     event: { on: () => () => {} },
     renderer: {
       getSelection: () => ({
@@ -235,7 +243,7 @@ function mock(opts: MockOpts = {}) {
         permission: () => [],
         question: () => [],
       },
-      part: () => opts.parts ?? [],
+      part: (mid: string) => opts.partsByMsg?.[mid] ?? opts.parts ?? [],
       lsp: () => [],
       mcp: () => [],
     },
@@ -445,10 +453,111 @@ describe("CommentView", () => {
     });
     cleanup = () => app.renderer.destroy();
 
+    // Resource is async — needs tick for the promise to resolve
+    await tick();
+    await app.renderOnce();
+    await tick();
     await app.renderOnce();
     const frame = app.captureCharFrame();
     expect(frame).toContain("Comment on output");
     expect(frame).not.toContain("No assistant output");
+  });
+
+  test("skips reverted messages and shows the last visible assistant output", async () => {
+    // msg-1 is the visible assistant, msg-2 is the reverted assistant
+    const { app } = await setup({
+      messages: [
+        { id: "msg-1", role: "assistant" },
+        { id: "msg-2", role: "user" },
+        { id: "msg-3", role: "assistant" },
+      ],
+      partsByMsg: {
+        "msg-1": [{ type: "text", text: "Visible output" }],
+        "msg-3": [{ type: "text", text: "Reverted output" }],
+      },
+      revert: { messageID: "msg-2" },
+    });
+    cleanup = () => app.renderer.destroy();
+
+    await tick();
+    await app.renderOnce();
+    await tick();
+    await app.renderOnce();
+    const frame = app.captureCharFrame();
+    expect(frame).toContain("Visible output");
+    expect(frame).not.toContain("Reverted output");
+  });
+
+  test("shows all messages when there is no revert", async () => {
+    const { app } = await setup({
+      messages: [
+        { id: "msg-1", role: "assistant" },
+        { id: "msg-2", role: "assistant" },
+      ],
+      partsByMsg: {
+        "msg-1": [{ type: "text", text: "First output" }],
+        "msg-2": [{ type: "text", text: "Latest output" }],
+      },
+    });
+    cleanup = () => app.renderer.destroy();
+
+    await tick();
+    await app.renderOnce();
+    await tick();
+    await app.renderOnce();
+    const frame = app.captureCharFrame();
+    // Should show latest (msg-2), not first
+    expect(frame).toContain("Latest output");
+  });
+
+  test("gracefully handles api.client.session.get failure", async () => {
+    // When the SDK call fails, output() should fall back to unfiltered behavior
+    const m = mock({
+      messages: [{ id: "msg-1", role: "assistant" }],
+      parts: [{ type: "text", text: "Fallback output" }],
+    });
+    // Make session.get throw
+    m.api.client.session.get = async () => {
+      throw new Error("network error");
+    };
+
+    let render:
+      | ((input: { params?: Record<string, unknown> }) => any)
+      | undefined;
+    (m.api as any).route.register = (routes: any[]) => {
+      for (const r of routes) {
+        if (r.name === "plan-comments") render = r.render;
+      }
+      return () => {};
+    };
+
+    await plugin.tui(m.api, undefined, {
+      id: "plan-comments",
+      source: "file",
+      spec: ".",
+      target: ".",
+      first_time: 0,
+      last_time: 0,
+      time_changed: 0,
+      load_count: 1,
+      fingerprint: "test",
+      state: "first",
+    });
+
+    const sid = "ses-1";
+    store.clear(sid);
+    const app = await testRender(
+      () => render!({ params: { sessionID: sid } }),
+      { width: 120, height: 40 },
+    );
+    cleanup = () => app.renderer.destroy();
+
+    await tick();
+    await app.renderOnce();
+    await tick();
+    await app.renderOnce();
+    const frame = app.captureCharFrame();
+    expect(frame).toContain("Fallback output");
   });
 
   test("renders 'Select text to leave a comment' hint", async () => {
