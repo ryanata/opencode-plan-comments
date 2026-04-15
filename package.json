@@ -1,17 +1,31 @@
 {
   "name": "opencode-plan-comments",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "license": "MIT",
+  "description": "Inline comment plugin for opencode — leave feedback on agent plan output",
+  "keywords": [
+    "opencode",
+    "plugin",
+    "tui",
+    "plan",
+    "comments",
+    "feedback"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/ryanata/opencode-plan-comments.git"
   },
+  "files": [
+    "dist"
+  ],
   "exports": {
-    ".": "./src/index.ts",
-    "./tui": "./src/tui.tsx"
+    ".": "./dist/index.js",
+    "./tui": "./dist/tui.js"
   },
   "scripts": {
+    "build": "rm -rf dist && NODE_ENV=production bun build src/tui.tsx src/index.ts --outdir dist --target bun --format esm --external @opencode-ai/plugin --external @opentui/core --external @opentui/solid --external solid-js",
+    "prepublishOnly": "bun run build",
     "test": "bun test"
   },
   "peerDependencies": {

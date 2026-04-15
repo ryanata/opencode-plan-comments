@@ -20,16 +20,30 @@ are not available.
 
 ## Install
 
-Clone the repo:
+From npm (recommended):
 
 ```
-cd ~/repos
+opencode plugin opencode-plan-comments
+```
+
+This installs the plugin and adds it to your `tui.json` automatically.
+
+You can also install from the TUI command palette — open the plugin manager
+and press `Shift+I`, then type `opencode-plan-comments`.
+
+### From source
+
+Clone the repo and install from a local path:
+
+```
 git clone https://github.com/ryanata/opencode-plan-comments.git
 cd opencode-plan-comments
 bun install
+opencode plugin ./
 ```
 
-Add to `~/.config/opencode/tui.json` (or `.opencode/tui.json` in your project):
+Or manually add to `~/.config/opencode/tui.json` (or `.opencode/tui.json`
+in your project):
 
 ```json
 {
@@ -48,6 +62,14 @@ Restart opencode.
 5. Press `Escape` to return — comments appear as a `[N inline comments]`
    badge in the prompt
 6. Press `Enter` to send, or backspace the badge to discard
+
+## Development
+
+```
+bun install
+bun test
+bun run build
+```
 
 ## License
 
