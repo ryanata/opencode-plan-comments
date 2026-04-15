@@ -23,10 +23,11 @@ are not available.
 From npm (recommended):
 
 ```
-opencode plugin opencode-plan-comments
+opencode plugin opencode-plan-comments --global
 ```
 
-This installs the plugin and adds it to your `tui.json` automatically.
+This installs the plugin and adds it to your global `~/.config/opencode/tui.json`.
+Drop the `--global` flag to install for the current project only.
 
 You can also install from the TUI command palette — open the plugin manager
 and press `Shift+I`, then type `opencode-plan-comments`.
@@ -39,7 +40,7 @@ Clone the repo and install from a local path:
 git clone https://github.com/ryanata/opencode-plan-comments.git
 cd opencode-plan-comments
 bun install
-opencode plugin ./
+opencode plugin ./ --global
 ```
 
 Or manually add to `~/.config/opencode/tui.json` (or `.opencode/tui.json`

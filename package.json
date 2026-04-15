@@ -1,6 +1,6 @@
 {
   "name": "opencode-plan-comments",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "type": "module",
   "license": "MIT",
   "description": "Inline comment plugin for opencode — leave feedback on agent plan output",
